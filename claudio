@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# LM Studio Anthropic-compatible endpoint (per https://lmstudio.ai/blog/claudecode)
+: "${ANTHROPIC_BASE_URL:=http://localhost:1234}"
+: "${ANTHROPIC_AUTH_TOKEN:=lmstudio}"
+export ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
+
+args=("$@")
+
+model_specified=false
+print_mode=false
+help_mode=false
+positional=""
+
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  a="${args[$i]}"
+  case "$a" in
+    --model)
+      model_specified=true
+      i=$((i + 1))
+      ;;
+    --model=*)
+      model_specified=true
+      ;;
+    -p|--print)
+      print_mode=true
+      ;;
+    -h|--help|-v|--version)
+      help_mode=true
+      ;;
+    --)
+      if [[ -z "$positional" && $((i + 1)) -lt ${#args[@]} ]]; then
+        positional="${args[$((i + 1))]}"
+      fi
+      ;;
+    -*)
+      ;;
+    *)
+      if [[ -z "$positional" ]]; then
+        positional="$a"
+      fi
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+starts_session=true
+if $help_mode; then
+  starts_session=false
+fi
+
+if [[ -n "$positional" ]]; then
+  case "$positional" in
+    doctor|install|mcp|plugin|setup-token|update|help)
+      starts_session=false
+      ;;
+  esac
+fi
+
+if $starts_session && ! $model_specified; then
+  if $print_mode || [[ ! -t 0 || ! -t 1 ]]; then
+    echo "claudio: no --model provided and non-interactive mode detected; please pass --model <modelKey>." >&2
+    exit 2
+  fi
+
+  command -v lms >/dev/null 2>&1 || { echo "claudio: missing dependency: lms" >&2; exit 1; }
+  command -v jq >/dev/null 2>&1 || { echo "claudio: missing dependency: jq" >&2; exit 1; }
+  command -v gum >/dev/null 2>&1 || { echo "claudio: missing dependency: gum" >&2; exit 1; }
+
+  models="$(lms ls --llm --json | jq -r '.[].modelKey' | sed '/^$/d' || true)"
+  if [[ -z "$models" ]]; then
+    echo "claudio: no models found (try: lms ls --llm)" >&2
+    exit 1
+  fi
+
+  selected="$(printf '%s\n' "$models" | gum choose --header "Select a model for Claude Code")"
+  if [[ -z "$selected" ]]; then
+    echo "claudio: no model selected" >&2
+    exit 1
+  fi
+
+  exec claude "$@" --model "$selected"
+fi
+
+exec claude "$@"
