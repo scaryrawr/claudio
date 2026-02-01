@@ -13,10 +13,16 @@ It’s a play on **Claude + LM Studio = claudio**.
 lms server start --port 1234
 ```
 
-3. Run:
+3. Build the Rust binary:
 
 ```sh
-./claudio
+cargo build --release
+```
+
+4. Run:
+
+```sh
+./target/release/claudio
 ```
 
 ## Usage
@@ -24,13 +30,13 @@ lms server start --port 1234
 Specify a model (skips any prompt):
 
 ```sh
-./claudio --model openai/gpt-oss-20b
+claudio --model openai/gpt-oss-20b
 ```
 
 Non-interactive mode (e.g. `-p/--print`) requires `--model`:
 
 ```sh
-./claudio -p "Hello" --model openai/gpt-oss-20b
+claudio -p "Hello" --model openai/gpt-oss-20b
 ```
 
 ## Configuration
@@ -46,6 +52,6 @@ Set either environment variable yourself to override the defaults.
 
 ## Optional: interactive model picker deps
 
-Interactive model selection uses `lms`, `jq`, and `gum`.
+Interactive model selection is built-in, but requires `lms` for model discovery.
 
 Reference: <https://lmstudio.ai/blog/claudecode>
