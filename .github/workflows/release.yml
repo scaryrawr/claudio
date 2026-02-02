@@ -54,25 +54,29 @@ jobs:
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
           fi
           cargo build --release --target ${{ matrix.target }}
+      - name: Compute ref name
+        id: meta
+        shell: bash
+        run: echo "ref_safe=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/claudio dist/claudio
-          tar -czf claudio-${{ replace(github.ref_name, '/', '-') }}-${{ matrix.target }}.tar.gz -C dist claudio
+          tar -czf claudio-${{ steps.meta.outputs.ref_safe }}-${{ matrix.target }}.tar.gz -C dist claudio
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/${{ matrix.target }}/release/claudio.exe dist/claudio.exe
-          Compress-Archive -Path dist/claudio.exe -DestinationPath claudio-${{ replace(github.ref_name, '/', '-') }}-${{ matrix.target }}.zip
+          Compress-Archive -Path dist/claudio.exe -DestinationPath claudio-${{ steps.meta.outputs.ref_safe }}-${{ matrix.target }}.zip
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: claudio-${{ replace(github.ref_name, '/', '-') }}-${{ matrix.target }}
-          path: claudio-${{ replace(github.ref_name, '/', '-') }}-${{ matrix.target }}.${{ matrix.ext }}
+          name: claudio-${{ steps.meta.outputs.ref_safe }}-${{ matrix.target }}
+          path: claudio-${{ steps.meta.outputs.ref_safe }}-${{ matrix.target }}.${{ matrix.ext }}
 
   release:
     name: Publish release
