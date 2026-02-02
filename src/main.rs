@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Result};
+use clap::builder::Command as ClapCommand;
+use clap::builder::ValueParser;
 use dialoguer::console::Style;
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::Select;
@@ -34,7 +36,7 @@ fn run() -> Result<ExitCode> {
     ensure_env_defaults();
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
-    let scan = scan_args(&args);
+    let scan = scan_args(&args)?;
 
     if scan.starts_session && !scan.model_specified {
         if scan.print_mode || !stdin_stdout_are_tty() {
@@ -65,47 +67,80 @@ struct ScanResult {
     starts_session: bool,
 }
 
-fn scan_args(args: &[OsString]) -> ScanResult {
-    let mut model_specified = false;
-    let mut print_mode = false;
-    let mut help_mode = false;
-    let mut positional: Option<OsString> = None;
+fn scan_args(args: &[OsString]) -> Result<ScanResult> {
+    let command = ClapCommand::new("claudio")
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .allow_hyphen_values(true)
+        .ignore_errors(true)
+        .arg(
+            clap::Arg::new("model")
+                .long("model")
+                .value_name("MODEL")
+                .allow_hyphen_values(true)
+                .value_parser(ValueParser::os_string()),
+        )
+        .arg(
+            clap::Arg::new("print")
+                .short('p')
+                .long("print")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("version")
+                .short('v')
+                .long("version")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            clap::Arg::new("rest")
+                .num_args(0..)
+                .allow_hyphen_values(true)
+                .trailing_var_arg(true)
+                .value_parser(ValueParser::os_string()),
+        );
 
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if let Some(arg_str) = arg.to_str() {
-            match arg_str {
-                "--model" => {
-                    model_specified = true;
-                    i += 1;
-                }
-                _ if arg_str.starts_with("--model=") => {
-                    model_specified = true;
-                }
-                "-p" | "--print" => {
-                    print_mode = true;
-                }
-                "-h" | "--help" | "-v" | "--version" => {
-                    help_mode = true;
-                }
-                "--" => {
-                    if positional.is_none() && i + 1 < args.len() {
-                        positional = Some(args[i + 1].clone());
-                    }
-                }
-                _ if arg_str.starts_with('-') => {}
-                _ => {
-                    if positional.is_none() {
-                        positional = Some(arg.clone());
-                    }
-                }
-            }
-        } else if positional.is_none() {
-            positional = Some(arg.clone());
+    let mut scan_args: Vec<OsString> = Vec::with_capacity(args.len() + 1);
+    scan_args.push(OsString::from("claudio"));
+    let mut expect_model_value = false;
+    for arg in args {
+        if expect_model_value {
+            scan_args.push(arg.clone());
+            expect_model_value = false;
+            continue;
         }
-        i += 1;
+        if let Some(arg_str) = arg.to_str() {
+            if arg_str == "--model" {
+                expect_model_value = true;
+                scan_args.push(arg.clone());
+                continue;
+            }
+            if arg_str == "--" {
+                continue;
+            }
+        }
+        scan_args.push(arg.clone());
     }
+
+    let matches = command.get_matches_from(scan_args);
+    let raw_model_specified = args.iter().any(|arg| {
+        arg.to_str()
+            .map(|arg_str| arg_str == "--model" || arg_str.starts_with("--model="))
+            .unwrap_or(false)
+    });
+    let model_specified = matches.contains_id("model") || raw_model_specified;
+    let print_mode = matches.get_flag("print");
+    let help_mode = matches.get_flag("help") || matches.get_flag("version");
+    let positional = matches
+        .get_many::<OsString>("rest")
+        .and_then(|mut values| values.next())
+        .cloned();
 
     let mut starts_session = !help_mode;
     if let Some(pos) = positional.as_ref().and_then(|p| p.to_str()) {
@@ -117,11 +152,11 @@ fn scan_args(args: &[OsString]) -> ScanResult {
         }
     }
 
-    ScanResult {
+    Ok(ScanResult {
         model_specified,
         print_mode,
         starts_session,
-    }
+    })
 }
 
 fn stdin_stdout_are_tty() -> bool {

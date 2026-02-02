@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+clap = "4"
 dialoguer = "0.11"
 is-terminal = "0.4"
 serde = { version = "1", features = ["derive"] }
