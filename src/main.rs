@@ -17,9 +17,15 @@ const NON_INTERACTIVE_MODEL_ERROR: &str =
     "claudio: no --model provided and non-interactive mode detected; please pass --model <modelKey>.";
 
 #[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<LmsModel>,
+}
+
+#[derive(Deserialize)]
 struct LmsModel {
-    #[serde(rename = "modelKey")]
-    model_key: Option<String>,
+    id: String,
+    #[serde(rename = "type")]
+    model_type: String,
 }
 
 fn main() -> ExitCode {
@@ -164,29 +170,30 @@ fn stdin_stdout_are_tty() -> bool {
 }
 
 fn list_models() -> Result<Vec<String>> {
-    let output = Command::new("lms")
-        .args(["ls", "--llm", "--json"])
-        .output()
-        .map_err(|_| anyhow!("claudio: missing dependency: lms"))?;
+    let base_url =
+        env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+    let auth_token =
+        env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_else(|_| DEFAULT_AUTH_TOKEN.to_string());
+    let url = format!("{}/api/v0/models", base_url);
 
-    if !output.status.success() {
-        return Err(anyhow!("claudio: no models found (try: lms ls --llm)"));
-    }
+    let response: ModelsResponse = ureq::get(&url)
+        .header("Authorization", format!("Bearer {}", auth_token).as_str())
+        .call()
+        .map_err(|_| anyhow!("claudio: could not reach LM Studio at {}", base_url))?
+        .body_mut()
+        .read_json()
+        .map_err(|_| anyhow!("claudio: failed to parse models response from {}", url))?;
 
-    let models: Vec<LmsModel> = serde_json::from_slice(&output.stdout)
-        .map_err(|_| anyhow!("claudio: no models found (try: lms ls --llm)"))?;
-
-    let mut keys = Vec::new();
-    for model in models {
-        if let Some(key) = model.model_key {
-            if !key.trim().is_empty() {
-                keys.push(key);
-            }
-        }
-    }
+    let keys: Vec<String> = response
+        .data
+        .into_iter()
+        .filter(|m| m.model_type == "llm" || m.model_type == "vlm")
+        .map(|m| m.id)
+        .filter(|id| !id.trim().is_empty())
+        .collect();
 
     if keys.is_empty() {
-        return Err(anyhow!("claudio: no models found (try: lms ls --llm)"));
+        return Err(anyhow!("claudio: no LLM models found at {}", base_url));
     }
 
     Ok(keys)
