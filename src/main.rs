@@ -13,11 +13,13 @@ use std::process::{Command, ExitCode};
 
 const DEFAULT_BASE_URL: &str = "http://localhost:1234";
 const DEFAULT_AUTH_TOKEN: &str = "lmstudio";
+const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+const OLLAMA_AUTH_TOKEN: &str = "ollama";
 const NON_INTERACTIVE_MODEL_ERROR: &str =
     "claudio: no --model provided and non-interactive mode detected; please pass --model <modelKey>.";
 
 #[derive(Deserialize)]
-struct ModelsResponse {
+struct LmStudioModelsResponse {
     data: Vec<LmsModel>,
 }
 
@@ -26,6 +28,52 @@ struct LmsModel {
     id: String,
     #[serde(rename = "type")]
     model_type: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaModel>,
+}
+
+#[derive(Deserialize)]
+struct OllamaModel {
+    name: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Provider {
+    LmStudio,
+    Ollama,
+}
+
+impl Provider {
+    fn name(self) -> &'static str {
+        match self {
+            Provider::LmStudio => "LM Studio",
+            Provider::Ollama => "Ollama",
+        }
+    }
+
+    fn base_url(self) -> &'static str {
+        match self {
+            Provider::LmStudio => DEFAULT_BASE_URL,
+            Provider::Ollama => OLLAMA_BASE_URL,
+        }
+    }
+
+    fn default_auth_token(self) -> &'static str {
+        match self {
+            Provider::LmStudio => DEFAULT_AUTH_TOKEN,
+            Provider::Ollama => OLLAMA_AUTH_TOKEN,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DiscoveredModel {
+    id: String,
+    provider: Provider,
 }
 
 fn main() -> ExitCode {
@@ -52,7 +100,8 @@ fn run() -> Result<ExitCode> {
 
         let models = list_models()?;
         let selected = pick_model(&models).ok_or_else(|| anyhow!("claudio: no model selected"))?;
-        return exec_claude(&args, Some(selected));
+        apply_selected_provider(selected.provider);
+        return exec_claude(&args, Some(selected.id));
     }
 
     exec_claude(&args, None)
@@ -169,22 +218,20 @@ fn stdin_stdout_are_tty() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-fn list_models() -> Result<Vec<String>> {
-    let base_url =
-        env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-    let auth_token =
-        env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_else(|_| DEFAULT_AUTH_TOKEN.to_string());
-    let url = format!("{}/api/v0/models", base_url);
-
-    let response: ModelsResponse = ureq::get(&url)
-        .header("Authorization", format!("Bearer {}", auth_token).as_str())
+fn list_lmstudio_models() -> Result<Vec<String>> {
+    let url = format!("{}/api/v0/models", DEFAULT_BASE_URL);
+    let response: LmStudioModelsResponse = ureq::get(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", DEFAULT_AUTH_TOKEN).as_str(),
+        )
         .call()
-        .map_err(|_| anyhow!("claudio: could not reach LM Studio at {}", base_url))?
+        .map_err(|_| anyhow!("could not reach LM Studio at {}", DEFAULT_BASE_URL))?
         .body_mut()
         .read_json()
-        .map_err(|_| anyhow!("claudio: failed to parse models response from {}", url))?;
+        .map_err(|_| anyhow!("failed to parse LM Studio models response from {}", url))?;
 
-    let keys: Vec<String> = response
+    let models: Vec<String> = response
         .data
         .into_iter()
         .filter(|m| m.model_type == "llm" || m.model_type == "vlm")
@@ -192,24 +239,104 @@ fn list_models() -> Result<Vec<String>> {
         .filter(|id| !id.trim().is_empty())
         .collect();
 
-    if keys.is_empty() {
-        return Err(anyhow!("claudio: no LLM models found at {}", base_url));
+    if models.is_empty() {
+        return Err(anyhow!("no LLM models found at {}", DEFAULT_BASE_URL));
     }
 
-    Ok(keys)
+    Ok(models)
 }
 
-fn pick_model(models: &[String]) -> Option<String> {
+fn list_ollama_models() -> Result<Vec<String>> {
+    let url = format!("{}/api/tags", OLLAMA_BASE_URL);
+    let response: OllamaTagsResponse = ureq::get(&url)
+        .call()
+        .map_err(|_| anyhow!("could not reach Ollama at {}", OLLAMA_BASE_URL))?
+        .body_mut()
+        .read_json()
+        .map_err(|_| anyhow!("failed to parse Ollama tags response from {}", url))?;
+
+    let models: Vec<String> = response
+        .models
+        .into_iter()
+        .filter_map(|model| model.name.or(model.model))
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+
+    if models.is_empty() {
+        return Err(anyhow!("no models found at {}", OLLAMA_BASE_URL));
+    }
+
+    Ok(models)
+}
+
+fn list_models() -> Result<Vec<DiscoveredModel>> {
+    let mut discovered: Vec<DiscoveredModel> = Vec::new();
+    let mut issues: Vec<String> = Vec::new();
+
+    match list_lmstudio_models() {
+        Ok(models) => discovered.extend(models.into_iter().map(|id| DiscoveredModel {
+            id,
+            provider: Provider::LmStudio,
+        })),
+        Err(err) => issues.push(format!("LM Studio: {}", err)),
+    }
+
+    match list_ollama_models() {
+        Ok(models) => discovered.extend(models.into_iter().map(|id| DiscoveredModel {
+            id,
+            provider: Provider::Ollama,
+        })),
+        Err(err) => issues.push(format!("Ollama: {}", err)),
+    }
+
+    discovered.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.provider.name().cmp(b.provider.name()))
+    });
+
+    if discovered.is_empty() {
+        return Err(anyhow!(
+            "claudio: no models discovered from LM Studio ({}) or Ollama ({}): {}",
+            DEFAULT_BASE_URL,
+            OLLAMA_BASE_URL,
+            issues.join(" | ")
+        ));
+    }
+
+    Ok(discovered)
+}
+
+fn pick_model(models: &[DiscoveredModel]) -> Option<DiscoveredModel> {
+    let items: Vec<String> = models
+        .iter()
+        .map(|m| format!("{} ({})", m.id, m.provider.name()))
+        .collect();
     let mut theme = ColorfulTheme::default();
     theme.active_item_style = Style::new().green().bold();
     let selection = Select::with_theme(&theme)
         .with_prompt("Select a model for Claude Code")
-        .items(models)
+        .items(&items)
         .default(0)
         .interact_opt()
         .ok()?;
 
     selection.map(|index| models[index].clone())
+}
+
+fn apply_selected_provider(provider: Provider) {
+    env::set_var("ANTHROPIC_BASE_URL", provider.base_url());
+
+    let set_provider_token = env::var("ANTHROPIC_AUTH_TOKEN")
+        .map(|token| {
+            let token = token.trim();
+            token.is_empty() || token == DEFAULT_AUTH_TOKEN || token == OLLAMA_AUTH_TOKEN
+        })
+        .unwrap_or(true);
+
+    if set_provider_token {
+        env::set_var("ANTHROPIC_AUTH_TOKEN", provider.default_auth_token());
+    }
 }
 
 fn exec_claude(args: &[OsString], selected_model: Option<String>) -> Result<ExitCode> {
